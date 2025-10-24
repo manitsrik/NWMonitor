@@ -47,7 +47,35 @@ function App() {
   const API_BASE_URL = 'http://127.0.0.1:8000'; // FastAPI backend URL
 
   useEffect(() => {
-    fetchDevices();
+    setLoading(true);
+    const eventSource = new EventSource(`${API_BASE_URL}/devices/stream`);
+
+    eventSource.onmessage = (event) => {
+      const result = JSON.parse(event.data);
+
+      if (result.event === 'initial') {
+        setDevices(result.data);
+        setLoading(false);
+      } else if (result.event === 'update') {
+        setDevices(prevDevices =>
+          prevDevices.map(device =>
+            device.id === result.data.id ? result.data : device
+          )
+        );
+      } else if (result.event === 'reload') {
+        fetchDevices();
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("EventSource failed:", err);
+      setError('Connection to server lost. Please refresh.');
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
   }, []);
 
   const fetchDevices = async () => {
@@ -129,7 +157,6 @@ function App() {
       }
       setShowAddDeviceModal(false);
       setNewDevice({ ip: '', name: '', community: 'public' });
-      fetchDevices(); // Refresh device list
     } catch (err) {
       setError('Failed to add device: ' + err.message);
       console.error("Error adding device:", err);
@@ -151,7 +178,6 @@ function App() {
       }
       setShowEditDeviceModal(false);
       setDeviceToEdit(null);
-      fetchDevices(); // Refresh device list
     } catch (err) {
       setError('Failed to update device: ' + err.message);
       console.error("Error updating device:", err);
@@ -170,7 +196,6 @@ function App() {
       setShowDeleteConfirmModal(false);
       setDeviceToDelete(null);
       setSelectedDevice(null); // Clear selected device if deleted
-      fetchDevices(); // Refresh device list
     } catch (err) {
       setError('Failed to delete device: ' + err.message);
       console.error("Error deleting device:", err);

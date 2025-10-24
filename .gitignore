@@ -1,0 +1,11 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+
+# SQLite databases
+*.db
+*.sqlite3
+
+# Virtual environment
+venv/
+.venv/

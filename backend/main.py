@@ -1,20 +1,21 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pysnmp.hlapi import getCmd, SnmpEngine, CommunityData, UdpTransportTarget, ContextData, ObjectType, ObjectIdentity
 import asyncio
-import os
-from typing import Optional
+import json
+from typing import Optional, List
 
 app = FastAPI()
 
+# --- CORS Configuration ---
 origins = [
-    "http://localhost:3000",  # React frontend default port
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -25,17 +26,12 @@ app.add_middleware(
 
 # --- Database Configuration ---
 SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-)
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
 class DeviceDB(Base):
     __tablename__ = "devices"
-
     ip = Column(String, primary_key=True, index=True)
     name = Column(String, index=True)
     community = Column(String)
@@ -43,7 +39,6 @@ class DeviceDB(Base):
 def create_db_tables():
     Base.metadata.create_all(bind=engine)
 
-# Dependency to get DB session
 def get_db():
     db = SessionLocal()
     try:
@@ -61,51 +56,70 @@ class DeviceCreate(DeviceBase):
     pass
 
 class Device(DeviceBase):
+    id: str # Add id field
     status: str
     sys_descr: Optional[str] = None
-
     class Config:
         from_attributes = True
 
+# --- Real-time Status Handling ---
+device_status_cache = {}
+device_status_stream = asyncio.Queue()
+
 # --- SNMP Fetching Logic ---
 async def snmp_get(host, community, oid):
-    """
-    Performs an SNMP GET request.
-    """
-    raw_snmp_result = await asyncio.to_thread(
-        lambda: next(getCmd(
-            SnmpEngine(),
-            CommunityData(community),
-            UdpTransportTarget((host, 161)),
-            ContextData(),
-            ObjectType(ObjectIdentity(oid))
-        ))
-    )
-
-    if not isinstance(raw_snmp_result, tuple) or len(raw_snmp_result) != 4:
-        print(f"ERROR: getCmd for {host} ({oid}) returned unexpected value after next(): {raw_snmp_result}")
+    try:
+        errorIndication, errorStatus, errorIndex, varBinds = await asyncio.to_thread(
+            lambda: next(getCmd(
+                SnmpEngine(),
+                CommunityData(community),
+                UdpTransportTarget((host, 161), timeout=2, retries=1),
+                ContextData(),
+                ObjectType(ObjectIdentity(oid))
+            ))
+        )
+        if errorIndication:
+            # print(f"SNMP Error for {host}: {errorIndication}")
+            return None
+        elif errorStatus:
+            # print(f"SNMP Error for {host}: {errorStatus.prettyPrint()}")
+            return None
+        else:
+            return varBinds[0][1].prettyPrint()
+    except Exception as e:
+        # print(f"Exception during SNMP GET for {host}: {e}")
         return None
 
-    errorIndication, errorStatus, errorIndex, varBinds = raw_snmp_result
+# --- Background Monitoring Task ---
+async def monitor_devices():
+    while True:
+        db = SessionLocal()
+        devices_from_db = db.query(DeviceDB).all()
+        db.close()
 
-    if errorIndication:
-        print(f"SNMP Error for {host} ({oid}): {errorIndication}")
-        return None
-    elif errorStatus:
-        print(f"SNMP Error for {host} ({oid}): %s at %s" % (errorStatus.prettyPrint(),
-                            errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
-        return None
-    else:
-        print(f"DEBUG: varBinds for {host} ({oid}): {varBinds}")
-        for varBind in varBinds:
-            return varBind[1].prettyPrint()
-    return None
+        for device_db in devices_from_db:
+            sys_descr = await snmp_get(device_db.ip, device_db.community, "1.3.6.1.2.1.1.1.0")
+            status = "online" if sys_descr else "offline"
+            
+            device_data = {
+                "id": device_db.ip,
+                "name": device_db.name,
+                "ip": device_db.ip,
+                "community": device_db.community,
+                "status": status,
+                "sys_descr": sys_descr
+            }
+
+            if device_db.ip not in device_status_cache or device_status_cache[device_db.ip]['status'] != status:
+                device_status_cache[device_db.ip] = device_data
+                await device_status_stream.put({"event": "update", "data": device_data})
+        
+        await asyncio.sleep(5) # Check every 5 seconds
 
 # --- FastAPI Endpoints ---
 @app.on_event("startup")
 async def startup_event():
     create_db_tables()
-    # Add some initial devices if the database is empty
     db = SessionLocal()
     if db.query(DeviceDB).count() == 0:
         initial_devices = [
@@ -115,57 +129,104 @@ async def startup_event():
         db.add_all(initial_devices)
         db.commit()
     db.close()
+    asyncio.create_task(monitor_devices())
 
 @app.get("/")
 async def root():
     return {"message": "Hello from FastAPI Backend!"}
 
-@app.get("/devices", response_model=list[Device])
-async def get_devices(db: Session = Depends(get_db)):
-    devices_from_db = db.query(DeviceDB).all()
-    devices_data = []
-    for device_db in devices_from_db:
-        sys_descr = await snmp_get(device_db.ip, device_db.community, "1.3.6.1.2.1.1.1.0")
-        status = "online" if sys_descr else "offline"
-        devices_data.append({
-            "id": device_db.ip,
-            "name": device_db.name,
-            "ip": device_db.ip,
-            "status": status,
-            "sys_descr": sys_descr
-        })
-    return devices_data
+@app.get("/devices", response_model=List[Device])
+async def get_devices_initial():
+    return list(device_status_cache.values())
+
+@app.get("/devices/stream")
+async def stream_device_status(request: Request):
+    async def event_generator():
+        # Send initial full list
+        initial_data = list(device_status_cache.values())
+        yield f"data: {json.dumps({'event': 'initial', 'data': initial_data})}\n\n"
+        
+        # Listen for updates
+        q = asyncio.Queue()
+        # This is a simplified consumer registration, for a real app you'd need a more robust fan-out mechanism
+        # For this example, we create a new queue for each client.
+        # A better approach would be a central distributor.
+        async def reader():
+            while True:
+                data = await device_status_stream.get()
+                await q.put(data)
+        
+        reader_task = asyncio.create_task(reader())
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                update = await q.get()
+                yield f"data: {json.dumps(update)}\n\n"
+                await asyncio.sleep(0.1)
+        finally:
+            reader_task.cancel()
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+async def notify_clients_of_change():
+    """Puts a reload event in the stream for all clients."""
+    await device_status_stream.put({"event": "reload", "data": {}})
+
 
 @app.post("/devices", response_model=Device)
 async def add_device(device: DeviceCreate, db: Session = Depends(get_db)):
     db_device = db.query(DeviceDB).filter(DeviceDB.ip == device.ip).first()
     if db_device:
         raise HTTPException(status_code=400, detail="Device with this IP already exists")
+    
     db_device = DeviceDB(**device.dict())
     db.add(db_device)
     db.commit()
     db.refresh(db_device)
-    return db_device
+    
+    # Manually update cache and notify
+    new_device_data = Device.from_orm(db_device).dict()
+    new_device_data['status'] = 'offline' # Assume offline initially
+    device_status_cache[db_device.ip] = new_device_data
+    await notify_clients_of_change()
+    
+    return new_device_data
 
 @app.put("/devices/{device_ip}", response_model=Device)
 async def update_device(device_ip: str, device: DeviceCreate, db: Session = Depends(get_db)):
     db_device = db.query(DeviceDB).filter(DeviceDB.ip == device_ip).first()
     if not db_device:
         raise HTTPException(status_code=404, detail="Device not found")
+    
     db_device.name = device.name
     db_device.community = device.community
     db.commit()
     db.refresh(db_device)
-    return db_device
+    
+    await notify_clients_of_change()
+    
+    return Device.from_orm(db_device)
+
 
 @app.delete("/devices/{device_ip}")
 async def delete_device(device_ip: str, db: Session = Depends(get_db)):
     db_device = db.query(DeviceDB).filter(DeviceDB.ip == device_ip).first()
     if not db_device:
         raise HTTPException(status_code=404, detail="Device not found")
+    
     db.delete(db_device)
     db.commit()
+    
+    # Remove from cache
+    if device_ip in device_status_cache:
+        del device_status_cache[device_ip]
+        
+    await notify_clients_of_change()
+    
     return {"message": "Device deleted successfully"}
+
 
 @app.get("/devices/{device_ip}/metrics")
 async def get_device_metrics(device_ip: str, db: Session = Depends(get_db)):
@@ -179,11 +240,8 @@ async def get_device_metrics(device_ip: str, db: Session = Depends(get_db)):
     in_octets = await snmp_get(device_ip, community, "1.3.6.1.2.1.2.2.1.10.1")
     out_octets = await snmp_get(device_ip, community, "1.3.6.1.2.1.2.2.1.16.1")
 
-    # For CPU/Memory, these OIDs are highly vendor-specific. 
-    # You would need to find the correct OIDs for your specific devices.
-    # For now, we'll return None or simulated values if real OIDs are not known.
-    cpu_usage = None # await snmp_get(device_ip, community, "YOUR_CPU_OID")
-    memory_usage = None # await snmp_get(device_ip, community, "YOUR_MEMORY_OID")
+    cpu_usage = None
+    memory_usage = None
 
     return {
         "device_ip": device_ip,

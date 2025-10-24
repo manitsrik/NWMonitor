@@ -1,0 +1,85 @@
+body {
+  font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: #f8f9fa; /* Light gray background */
+  color: #343a40; /* Darker text for better contrast */
+}
+
+#root {
+  padding-top: 20px;
+  padding-bottom: 20px;
+}
+
+.card {
+  border: none; /* Remove default border */
+  border-radius: 0.75rem; /* More rounded corners */
+  box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.1); /* More prominent shadow */
+  transition: all 0.3s ease-in-out; /* Smooth transition for hover */
+}
+
+.card:hover {
+  box-shadow: 0 1rem 2rem rgba(0, 0, 0, 0.15); /* Enhanced shadow on hover */
+  transform: translateY(-3px); /* Slight lift on hover */
+}
+
+.card-header {
+  background-color: #ffffff; /* White header background */
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05); /* Subtle border */
+  font-weight: 600;
+  color: #495057;
+  border-top-left-radius: 0.75rem; /* Match card border-radius */
+  border-top-right-radius: 0.75rem; /* Match card border-radius */
+}
+
+.list-group-item {
+  border-color: rgba(0, 0, 0, 0.05); /* Subtle border for list items */
+  transition: background-color 0.2s ease-in-out;
+}
+
+.list-group-item:hover {
+  background-color: #e9ecef; /* Light gray on hover */
+}
+
+.status-count-box {
+  border: 1px solid #e0e0e0;
+  border-radius: 0.5rem;
+  padding: 10px 5px;
+  margin-bottom: 10px;
+  background-color: #ffffff;
+  box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+}
+
+.status-count-box.online-box {
+  border-color: #28a745; /* Green border */
+  background-color: rgba(40, 167, 69, 0.05); /* Very light green background */
+}
+
+.status-count-box.offline-box {
+  border-color: #dc3545; /* Red border */
+  background-color: rgba(220, 53, 69, 0.05); /* Very light red background */
+}
+
+.status-indicator {
+  display: inline-block;
+  width: 12px; /* Slightly larger */
+  height: 12px; /* Slightly larger */
+  border-radius: 50%;
+  margin-right: 8px; /* More spacing */
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); /* Subtle shadow */
+  transition: all 0.3s ease-in-out; /* Smooth transition for hover */
+  vertical-align: middle; /* Align with text */
+}
+
+.status-indicator.online {
+  background-color: #28a745; /* Bootstrap success green */
+  box-shadow: 0 0 8px rgba(40, 167, 69, 0.6); /* Glowing effect for online */
+}
+
+.status-indicator.offline {
+  background-color: #dc3545; /* Bootstrap danger red */
+  box-shadow: 0 0 8px rgba(220, 53, 69, 0.6); /* Glowing effect for offline */
+}
+
+.status-indicator:hover {
+  transform: scale(1.2); /* Pop out on hover */
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3); /* Enhanced shadow on hover */
+}

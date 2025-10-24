@@ -7,6 +7,9 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pysnmp.hlapi import getCmd, SnmpEngine, CommunityData, UdpTransportTarget, ContextData, ObjectType, ObjectIdentity
 import asyncio
 import json
+import platform
+import re
+import subprocess
 from typing import Optional, List
 
 app = FastAPI()
@@ -90,6 +93,32 @@ async def snmp_get(host, community, oid):
         # print(f"Exception during SNMP GET for {host}: {e}")
         return None
 
+async def ping_check(host: str) -> bool:
+    """
+    Performs a simple ping check to see if the host is reachable.
+    Returns True if reachable, False otherwise.
+    """
+    param = "-n" if platform.system().lower() == "windows" else "-c"
+    command = [param, "3", host] # Ping 3 times to check reachability
+
+    try:
+        # Run ping command, capture output, and don't raise exception for non-zero exit codes
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["ping"] + command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5 # Add a timeout for the ping command itself
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(f"Ping check for {host} timed out.")
+        return False
+    except Exception as e:
+        print(f"Exception during ping check for {host}: {e}")
+        return False
+
 # --- Background Monitoring Task ---
 async def monitor_devices():
     while True:
@@ -98,8 +127,22 @@ async def monitor_devices():
         db.close()
 
         for device_db in devices_from_db:
+            print(f"Monitoring device: {device_db.ip} ({device_db.name})")
             sys_descr = await snmp_get(device_db.ip, device_db.community, "1.3.6.1.2.1.1.1.0")
-            status = "online" if sys_descr else "offline"
+            print(f"  SNMP sys_descr result: {sys_descr}")
+            
+            status = "offline"
+            if sys_descr:
+                status = "online"
+            else:
+                print(f"  SNMP failed for {device_db.ip}, attempting ping check...")
+                # SNMP failed, try ping as fallback
+                if await ping_check(device_db.ip):
+                    print(f"  Ping check for {device_db.ip}: Online")
+                    status = "online"
+                else:
+                    print(f"  Ping check for {device_db.ip}: Offline")
+                    status = "offline"
             
             device_data = {
                 "id": device_db.ip,
@@ -107,12 +150,16 @@ async def monitor_devices():
                 "ip": device_db.ip,
                 "community": device_db.community,
                 "status": status,
-                "sys_descr": sys_descr
+                "sys_descr": sys_descr # sys_descr will be None if SNMP failed
             }
+            print(f"  Final status for {device_db.ip}: {status}")
 
             if device_db.ip not in device_status_cache or device_status_cache[device_db.ip]['status'] != status:
+                print(f"  Status change detected for {device_db.ip}: {device_status_cache.get(device_db.ip, {}).get('status', 'N/A')} -> {status}. Notifying clients.")
                 device_status_cache[device_db.ip] = device_data
                 await device_status_stream.put({"event": "update", "data": device_data})
+            else:
+                print(f"  No status change for {device_db.ip}. Current status: {status}")
         
         await asyncio.sleep(5) # Check every 5 seconds
 
@@ -212,20 +259,63 @@ async def update_device(device_ip: str, device: DeviceCreate, db: Session = Depe
 
 @app.delete("/devices/{device_ip}")
 async def delete_device(device_ip: str, db: Session = Depends(get_db)):
+    print(f"Attempting to delete device with IP: {device_ip}")
     db_device = db.query(DeviceDB).filter(DeviceDB.ip == device_ip).first()
     if not db_device:
+        print(f"Device with IP {device_ip} not found in DB.")
         raise HTTPException(status_code=404, detail="Device not found")
     
     db.delete(db_device)
+    print(f"db.delete() called for device {device_ip}.")
     db.commit()
+    print(f"db.commit() called for device {device_ip}.")
     
     # Remove from cache
     if device_ip in device_status_cache:
         del device_status_cache[device_ip]
+        print(f"Device {device_ip} removed from cache.")
         
     await notify_clients_of_change()
+    print(f"Clients notified of change for device {device_ip}.")
     
     return {"message": "Device deleted successfully"}
+
+
+@app.get("/devices/{device_ip}/ping")
+async def ping_device(device_ip: str):
+    """
+    Pings a device to check for reachability.
+    """
+    if not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", device_ip):
+        raise HTTPException(status_code=400, detail="Invalid IP address format")
+
+    param = "-n" if platform.system().lower() == "windows" else "-c"
+    command = ["ping", param, "5", device_ip] # Use list for subprocess.run for safety
+    print(f"Executing command: {' '.join(command)}")
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True, # Capture output as text
+            check=False # Do not raise an exception for non-zero exit codes
+        )
+
+        stdout_str = result.stdout
+        stderr_str = result.stderr
+
+        print(f"Ping stdout: {stdout_str}")
+        print(f"Ping stderr: {stderr_str}")
+
+        if result.returncode == 0:
+            return {"status": "success", "output": stdout_str}
+        else:
+            return {"status": "error", "output": stderr_str}
+    except Exception as e:
+        import traceback
+        print(f"Exception in ping_device of type {type(e)}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to execute ping command: {str(e)}")
 
 
 @app.get("/devices/{device_ip}/metrics")

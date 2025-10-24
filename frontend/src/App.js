@@ -43,6 +43,9 @@ function App() {
     name: '',
     community: 'public',
   });
+  const [showPingResultModal, setShowPingResultModal] = useState(false);
+  const [pingResult, setPingResult] = useState('');
+  const [pingingDevice, setPingingDevice] = useState(null);
 
   const API_BASE_URL = 'http://127.0.0.1:8000'; // FastAPI backend URL
 
@@ -202,6 +205,25 @@ function App() {
     }
   };
 
+  const handlePing = async (deviceIp) => {
+    setPingingDevice(deviceIp);
+    setPingResult('Pinging...');
+    setShowPingResultModal(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/devices/${deviceIp}/ping`);
+      const data = await response.json();
+      if (data.status === 'success') {
+        setPingResult(data.output);
+      } else {
+        setPingResult(data.output);
+      }
+    } catch (err) {
+      setPingResult('Failed to ping device: ' + err.message);
+    } finally {
+      setPingingDevice(null);
+    }
+  };
+
   const chartData = selectedDevice && selectedMetricForChart && metricHistory[selectedDevice.ip] && metricHistory[selectedDevice.ip][selectedMetricForChart] ? {
     labels: Array.from({ length: 10 }, (_, i) => `Time ${i + 1}`),
     datasets: [
@@ -265,19 +287,35 @@ function App() {
 
       <Row>
         <Col md={4}>
-          {/* Pie Chart for Device Status Overview */}
+
           <Card className="mb-3">
             <Card.Header>Device Status Overview</Card.Header>
             <Card.Body>
-              {devices.length > 0 ? (
-                <div style={{ height: '200px' }}>
-                  <Pie data={pieChartData} options={pieChartOptions} />
-                </div>
-              ) : (
-                <p className="text-center">No devices to display status overview.</p>
-              )}
+              <Row>
+                <Col md={6}>
+                  {devices.length > 0 ? (
+                    <div style={{ height: '200px' }}>
+                      <Pie data={pieChartData} options={pieChartOptions} />
+                    </div>
+                  ) : (
+                    <p className="text-center">No devices to display status overview.</p>
+                  )}
+                </Col>
+                <Col md={6} className="text-center">
+                  <h5>Online</h5>
+                  <div className="status-count-box online-box">
+                    <p className="text-success fs-2 fw-bold">{onlineCount}</p>
+                  </div>
+                  <h5>Offline</h5>
+                  <div className="status-count-box offline-box">
+                    <p className="text-danger fs-2 fw-bold">{offlineCount}</p>
+                  </div>
+                </Col>
+              </Row>
             </Card.Body>
           </Card>
+
+
 
           <Card>
             <Card.Header className="d-flex justify-content-between align-items-center">
@@ -300,9 +338,22 @@ function App() {
                     className="d-flex justify-content-between align-items-center"
                   >
                     <div onClick={() => handleDeviceClick(device)} style={{ flexGrow: 1, cursor: 'pointer' }}>
+                      <span className={`status-indicator ${device.status}`}></span>
                       {device.name} ({device.ip}) - <span className={device.status === "online" ? "text-success" : "text-danger"}>{device.status}</span>
                     </div>
                     <div>
+                      <Button
+                        variant="outline-primary"
+                        size="sm"
+                        className="me-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePing(device.ip);
+                        }}
+                        disabled={pingingDevice === device.ip}
+                      >
+                        {pingingDevice === device.ip ? <Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" /> : 'Ping'}
+                      </Button>
                       <Button
                         variant="outline-info"
                         size="sm"
@@ -500,6 +551,21 @@ function App() {
           </Button>
           <Button variant="danger" onClick={handleDeleteDevice}>
             Delete
+          </Button>
+        </Modal.Footer>
+      </Modal>
+
+      {/* Ping Result Modal */}
+      <Modal show={showPingResultModal} onHide={() => setShowPingResultModal(false)} size="lg">
+        <Modal.Header closeButton>
+          <Modal.Title>Ping Result</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <pre>{pingResult}</pre>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowPingResultModal(false)}>
+            Close
           </Button>
         </Modal.Footer>
       </Modal>
